@@ -129,20 +129,8 @@ def download_ota(base_path, manifest, ua, os_type, previous_version_base_path = 
         patches = manifest["patches"]
 
     print("[+] Got a list of %s regular files and %s patches"%(len(hashes), len(patches)))
-    
-    print("[+] Starting required threads...")
-
-    for _ in range(16):
-        thread = threading.Thread(target = download_handler, args = [download_tasks, is_done])
-        thread.start()
-        threads.append(thread)
-
-    print("[+] Done starting threads")
 
     print("[+] Queueing files needed for downloading...")
-
-    have_files = 0
-    is_downloading = False
 
     for i,v in hashes.items():
         output_path = i
@@ -164,11 +152,9 @@ def download_ota(base_path, manifest, ua, os_type, previous_version_base_path = 
         
         if not current_output_dir:
             current_output_dir = "."
-            
-        have_files += 1
 
         if not path.isdir(current_output_dir):
-            print("[+] Creating directory %s"%(current_output_dir))
+            # print("[+] Creating directory %s"%(current_output_dir))
             makedirs(current_output_dir)
 
         if previous_version_base_path is not None:
@@ -178,14 +164,9 @@ def download_ota(base_path, manifest, ua, os_type, previous_version_base_path = 
             continue
 
         if previous_version_base_path and path.isfile(previous_version_output_path) and md5(open(previous_version_output_path,"rb").read()).hexdigest() == v:
-            print(f"[+] Using previous file from last version from {previous_version_output_path}")
+            # print(f"[+] Using previous file from last version from {previous_version_output_path}")
             copyfile(previous_version_output_path, current_output_path)
             continue
-        
-        if is_downloading is False:
-            print(f"[+] Starting download for this version after {have_files} verified files.")
-    
-        is_downloading = True
 
         download_url = ASSET_URL%(os_type, commit, i)
         download_tasks.put([download_url, current_output_path, headers])
@@ -218,6 +199,21 @@ def download_ota(base_path, manifest, ua, os_type, previous_version_base_path = 
         download_tasks.put([download_url, output_path, headers])
 
     print("[+] Done queueing all tasks")
+
+    if download_tasks.qsize() == 0:
+        print("[!] No files in download queue!")
+        return
+    
+    print(f"[+] Got {download_tasks.qsize()} files to download")
+    
+    print("[+] Starting required threads...")
+
+    for _ in range(16):
+        thread = threading.Thread(target = download_handler, args = [download_tasks, is_done])
+        thread.start()
+        threads.append(thread)
+
+    print("[+] Done starting threads")
     
     is_done.set()
 
@@ -232,10 +228,67 @@ def download_ota(base_path, manifest, ua, os_type, previous_version_base_path = 
 
     print("[+] All files downloaded")
 
+def process_ota_versions(versions, os_type):
+    for i in versions:
 
-# Screw this hack. If it crashes it's def on me
-# ik I can return the first one, but idk if it will change
-# So this piece of code searches through the entire page
+        ota_version = str(i)
+
+        if ota_version.isdigit():
+            ota_version+=".0"
+
+        closest_version = None
+        closest_version_path = None
+        
+        if not path.isdir(os_type):
+            makedirs(os_type)
+
+        old_versions = listdir(os_type)
+        
+        if ota_version in old_versions:
+            old_versions.remove(ota_version)
+
+        if len(old_versions) > 0:
+            old_versions = sorted(old_versions, key = lambda x: abs(Decimal(ota_version) - Decimal(x)))
+            closest_version = old_versions[0]
+
+        if closest_version is not None:
+            print(f"[+] Sourcing files from {closest_version}")
+            closest_version_path = path.join(os_type, closest_version)
+
+        print(f"[+] Trying to get {ota_version} for {os_type}") 
+
+        status_code, req_content = get_manifest_file(os_type, ota_version)
+
+        if status_code != 200:
+            # Fast fail
+            print("[!] Discord returned a non 200 status code for android manifest.json")
+            print("="*50)
+            continue
+
+        try:
+            manifest = json.loads(req_content)
+        except Exception as e:
+            print("[!] Error decoding manifest.json!")
+            clean_exit()
+
+        ota_root_path = path.join(os_type, ota_version)
+
+        if not path.isdir(ota_root_path):
+            makedirs(ota_root_path)
+
+        frozen_manifest = json.dumps(manifest, indent=4)
+
+        for manifest_file in [path.join(ota_root_path, x) for x in listdir(ota_root_path) if x.startswith("manifest")]:
+            if open(manifest_file, "r").read() == frozen_manifest:
+                break
+        else:
+            open(path.join(ota_root_path, f"manifest_{int(datetime.today().timestamp())}.json"), "w").write(frozen_manifest)
+
+        print(f"[+] Starting {os_type} ota checks")
+        download_ota(ota_root_path, manifest, DISCORD_UA, os_type, closest_version_path)
+        print(f"[+] Finished {os_type} ota checks!")
+        print("="*50)
+
 
 print("[+] Getting discord's version on Google play store")
 status_code, req_content = requests_with_ua(GOOGLE_APP_STORE_URL, BEST_UA)
@@ -245,77 +298,8 @@ if status_code != 200:
     print("[!] Expected 200 status code, got %i instead"%(status_code))
     clean_exit()
 
-android_versions = re.findall(r"\"[0-9]*\.[0-9]* - Stable\"", req_content)
-
-validated_android_versions = set()
-
-for i in android_versions:
-    version = i[1:-1]
-    version = version.replace(" - Stable","")
-    version = version.strip() # Just in case something went wonky
-
-    # Check if version is float with regex before we blow ourselves sky high trying to convert it into decimal
-    if not re.match("^[0-9]*\.[0-9]*$", version):
-        continue
-    
-    try:
-        # We use the decimal library as floating point arithmetic gets quirky 
-        version = Decimal(version)
-        validated_android_versions.add(version)
-    except:
-        # how did you trigger this bruh
-        print("[!] Error in converting version string %s to decimal"%(i))
-
-for i in validated_android_versions:
-
-    # Change the type
-    android_version = str(i)
-    closest_version = None
-    previous_android_version_path = None
-    
-    old_versions = listdir("android")
-    
-    if android_version in old_versions:
-        old_versions.remove(android_version)
-
-    if len(old_versions) > 0:
-        old_versions = sorted(old_versions, key = lambda x: abs(Decimal(android_version) - Decimal(x)))
-        closest_version = old_versions[0]
-
-    if closest_version is not None:
-        print(f"[+] Sourcing files from {closest_version}")
-        previous_android_version_path = f"android/{closest_version}"
-
-    print("[+] Testing android version %s"%(android_version))
-
-    status_code, req_content = get_manifest_file("android", android_version)
-
-    if status_code != 200:
-        # Fast fail
-        print("[!] Discord returned a non 200 status code for android manifest.json")
-        continue
-
-    try:
-        android_manifest = json.loads(req_content)
-    except Exception as e:
-        print("[!] Error decoding Android manifest.json!")
-        clean_exit()
-
-    if not path.isdir(f"android/{android_version}"):
-        makedirs(f"android/{android_version}")
-
-    frozen_android_manifest = json.dumps(android_manifest, indent=4)
-
-    for manifest_file in [path.join(f"android/{android_version}", x) for x in listdir(f"android/{android_version}") if x.startswith("manifest")]:
-        if open(manifest_file, "r").read() == frozen_android_manifest:
-            break
-    else:
-        open(f"android/{android_version}/manifest_{int(datetime.today().timestamp())}.json", "w").write(frozen_android_manifest)
-
-    print("[+] Starting android ota checks")
-    download_ota(f"android/{android_version}", android_manifest, DISCORD_UA, "android", previous_android_version_path)
-    print("[+] Finished android ota checks!")
-    print("="*30)
+android_versions = list(set(re.findall(r"\"([0-9]*\.[0-9]*) - Stable\"", req_content)))
+process_ota_versions(android_versions, "android")
 
 print("[+] Getting discord's version on Apple app store")
 status_code, req_content = requests_with_ua(APPLE_APP_STORE_URL, BEST_UA)
@@ -325,53 +309,8 @@ if status_code != 200:
     print("[!] Expected 200 status code, got %i instead"%(status_code))
     clean_exit()
 
-soup = BeautifulSoup(req_content, "html.parser")
-version = soup.find("p",{"class":"whats-new__latest__version"}).string
+(version_history_raw,) = re.search(r"versionHistory\\\":(\[.*?\])", req_content).groups(1)
+version_history = json.loads(version_history_raw.replace("\\\"",'"'))
+ios_versions = list(set([x["versionDisplay"] for x in version_history]))
 
-if len(version) == 0:
-    print("[!] Version string can't be found")
-    print("[!] Don't worry, this is normal. It means Apple changed their dom.")
-    print("[!] Submit a issue on github to let me know!")
-    clean_exit()
-
-if not version.startswith("Version "):
-    print("[!] Got a invalid version string from Apple app store")
-    print("[!] Got %s"%(version))
-    clean_exit()
-
-ios_version = version[8:]
-
-if ios_version.isdigit():
-    ios_version+=".0"
-
-if not re.match("^[0-9]*\.[0-9]*$", ios_version):
-    print("[!] Version number is not a decimal!")
-    print("[!] Got: %s"%(ios_version))
-    clean_exit()
-
-
-print("[+] Got latest iOS release: %s"%(ios_version))
-
-status_code, req_content = get_manifest_file("ios", ios_version)
-
-if status_code != 200:
-    print("[!] Discord returned a non 200 status code for ios manifest.json")
-    clean_exit()
-
-try:
-    ios_manifest = json.loads(req_content)
-except Exception as e:
-    print("[!] Error decoding ios manifest.json!")
-    clean_exit()
-
-frozen_ios_manifest = json.dumps(ios_manifest, indent=4)
-
-for manifest_file in [path.join(f"ios/{ios_version}", x) for x in listdir(f"ios/{ios_version}") if x.startswith("manifest")]:
-    if open(manifest_file, "r").read() == frozen_ios_manifest:
-        break
-else:
-    open(f"ios/{ios_version}/manifest_{int(datetime.today().timestamp())}.json", "w").write(frozen_ios_manifest)
-
-print("[+] Starting iOS ota checks")
-download_ota(f"ios/{ios_version}", ios_manifest, ios_version, "ios")
-print("[+] Finished iOS ota checks!")
+process_ota_versions(ios_versions, "ios")
