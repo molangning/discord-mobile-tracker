@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import requests
 import json
 import re
+from datetime import datetime
 from queue import Queue
 from queue import Empty
 import threading
@@ -299,6 +300,17 @@ for i in validated_android_versions:
     except Exception as e:
         print("[!] Error decoding Android manifest.json!")
         clean_exit()
+
+    if not path.isdir(f"android/{android_version}"):
+        makedirs(f"android/{android_version}")
+
+    frozen_android_manifest = json.dumps(android_manifest, indent=4)
+
+    for manifest_file in [x for x in listdir(f"android/{android_version}") if x.startswith("manifest")]:
+        if open(manifest_file, "r").read() == frozen_android_manifest:
+            break
+    else:
+        open(f"android/{android_version}/manifest_{int(datetime.today().timestamp())}.json", "w").write(frozen_android_manifest)
 
     print("[+] Starting android ota checks")
     download_ota(f"android/{android_version}", android_manifest, DISCORD_UA, "android", previous_android_version_path)
