@@ -306,7 +306,7 @@ for i in validated_android_versions:
 
     frozen_android_manifest = json.dumps(android_manifest, indent=4)
 
-    for manifest_file in [x for x in listdir(f"android/{android_version}") if x.startswith("manifest")]:
+    for manifest_file in [path.join(f"android/{android_version}", x) for x in listdir(f"android/{android_version}") if x.startswith("manifest")]:
         if open(manifest_file, "r").read() == frozen_android_manifest:
             break
     else:
@@ -339,21 +339,20 @@ if not version.startswith("Version "):
     print("[!] Got %s"%(version))
     clean_exit()
 
-version = version[8:]
+ios_version = version[8:]
 
-if version.isdigit():
-    version+=".0"
+if ios_version.isdigit():
+    ios_version+=".0"
 
-if not re.match("^[0-9]*\.[0-9]*$", version):
+if not re.match("^[0-9]*\.[0-9]*$", ios_version):
     print("[!] Version number is not a decimal!")
-    print("[!] Got: %s"%(version))
+    print("[!] Got: %s"%(ios_version))
     clean_exit()
 
-LATEST_IOS_VERSION = version
 
-print("[+] Got latest iOS release: %s"%(LATEST_IOS_VERSION))
+print("[+] Got latest iOS release: %s"%(ios_version))
 
-status_code, req_content = get_manifest_file("ios", LATEST_IOS_VERSION)
+status_code, req_content = get_manifest_file("ios", ios_version)
 
 if status_code != 200:
     print("[!] Discord returned a non 200 status code for ios manifest.json")
@@ -365,6 +364,14 @@ except Exception as e:
     print("[!] Error decoding ios manifest.json!")
     clean_exit()
 
+frozen_ios_manifest = json.dumps(ios_manifest, indent=4)
+
+for manifest_file in [path.join(f"ios/{ios_version}", x) for x in listdir(f"ios/{ios_version}") if x.startswith("manifest")]:
+    if open(manifest_file, "r").read() == frozen_ios_manifest:
+        break
+else:
+    open(f"ios/{ios_version}/manifest_{int(datetime.today().timestamp())}.json", "w").write(frozen_ios_manifest)
+
 print("[+] Starting iOS ota checks")
-download_ota(f"ios/{version}", ios_manifest, LATEST_IOS_VERSION, "ios")
+download_ota(f"ios/{ios_version}", ios_manifest, ios_version, "ios")
 print("[+] Finished iOS ota checks!")
