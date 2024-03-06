@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v3
       
       - name: Update lists
-        run: ./updaters/update.sh
+        run: ./.updaters/update.sh
           
       - name: Commit files if changed
         run: |
