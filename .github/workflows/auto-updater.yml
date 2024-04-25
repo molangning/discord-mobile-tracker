@@ -19,7 +19,7 @@ jobs:
         run: |
           git add -N .
 
-          if [ -z "$(git ls-files --modified sources/)" ]; then
+          if [ -z "$(git ls-files --modified android/ ios/)" ]; then
               echo "[+] No files were changed"
           else
               echo "[+] Files were changed! Pushing changed..."
